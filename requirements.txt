@@ -1,0 +1,6 @@
+streamlit
+rapidocr-onnxruntime
+pandas
+openpyxl
+pillow
+numpy

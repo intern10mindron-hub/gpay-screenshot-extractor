@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Your payment screenshots and exports contain bank/UPI details - never commit them
+*.png
+*.jpg
+*.jpeg
+*.webp
+payments.csv
+payments.xlsx
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import inspect
 import io
 import re
 from datetime import datetime
@@ -14,6 +17,10 @@ COLUMNS = [
     "Receiver Name", "Sender Name",
     "Google Transaction ID",
 ]
+
+# Last table column: thumbnail of the row's screenshot (double-click to enlarge).
+# It is shown in the table only and is never exported.
+PREVIEW = "Screenshot"
 
 # Word-space detection. Gaps are measured as a fraction of the text-line height.
 # A gap can only be a space if it is at least MIN_WORD_GAP, and the spaces must
@@ -305,6 +312,27 @@ def check_row(r):
     return bad
 
 
+# ------------------------------------------------------- duplicates / preview
+def is_duplicate(row, rows):
+    """True if this payment is already in the list: same UPI transaction ID,
+    or exactly the same extracted data (for screenshots without a readable ID)."""
+    upi = row["UPI Transaction ID"]
+    if upi and any(r["UPI Transaction ID"] == upi for r in rows):
+        return True
+    has_data = row["Date"] != "" or row["Amount (INR)"] != ""
+    return has_data and any(all(r[c] == row[c] for c in COLUMNS) for r in rows)
+
+
+def make_preview(img: Image.Image, max_width=600) -> str:
+    """Screenshot as a small base64 JPEG, for the table's Screenshot column."""
+    im = img.convert("RGB")
+    if im.width > max_width:
+        im = im.resize((max_width, int(im.height * max_width / im.width)), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=80)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 # ----------------------------------------------------------------- UI
 st.set_page_config(page_title="GPay Screenshot Extractor", layout="wide")
 st.title("GPay / UPI Screenshot → Table")
@@ -312,6 +340,8 @@ st.caption("Upload payment screenshots. Details are extracted into a table you c
 
 if "rows" not in st.session_state:
     st.session_state.rows = []
+if "seen_files" not in st.session_state:
+    st.session_state.seen_files = set()      # fingerprints of screenshots already read
 
 files = st.file_uploader(
     "Upload screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True
@@ -321,34 +351,50 @@ col_a, col_b = st.columns([1, 1])
 if col_a.button("Extract", type="primary", disabled=not files):
     progress = st.progress(0.0)
     for n, f in enumerate(files, 1):
-        img = Image.open(f)
-        lines = ocr_lines(img)
-        st.session_state.rows.append(parse_payment(lines, f.name))
+        data = f.getvalue()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest not in st.session_state.seen_files:       # the exact same file again -> skip
+            st.session_state.seen_files.add(digest)
+            img = Image.open(io.BytesIO(data))
+            row = parse_payment(ocr_lines(img), f.name)
+            if not is_duplicate(row, st.session_state.rows):
+                row[PREVIEW] = make_preview(img)
+                st.session_state.rows.append(row)
         progress.progress(n / len(files))
     progress.empty()
 
 if col_b.button("Clear all"):
     st.session_state.rows = []
+    st.session_state.seen_files = set()
+
+# taller rows so the thumbnails are visible (only on Streamlit versions that support it)
+ROW_KW = {"row_height": 80} if "row_height" in inspect.signature(st.data_editor).parameters else {}
 
 if st.session_state.rows:
-    df = pd.DataFrame(st.session_state.rows, columns=COLUMNS)
-    # remove duplicates (same UPI ID uploaded twice)
-    has_id = df["UPI Transaction ID"] != ""
-    df = pd.concat([df[has_id].drop_duplicates("UPI Transaction ID"), df[~has_id]]).reset_index(drop=True)
+    df = pd.DataFrame(st.session_state.rows, columns=COLUMNS + [PREVIEW])
 
     st.subheader("Extracted data (click a cell to correct it)")
-    edited = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+    st.caption("Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row.")
+    edited = st.data_editor(
+        df,
+        num_rows="dynamic",
+        use_container_width=True,
+        disabled=[PREVIEW],
+        column_config={PREVIEW: st.column_config.ImageColumn(PREVIEW)},
+        **ROW_KW,
+    )
+    table = edited.drop(columns=[PREVIEW], errors="ignore")   # what gets exported
 
-    for i, r in edited.fillna("").iterrows():
+    for i, r in table.fillna("").iterrows():
         if any(str(v) != "" for v in r):
             bad = check_row(r)
             if bad:
                 st.warning(f"Row {i + 1}: please check {', '.join(bad)}")
 
-    csv_bytes = edited.to_csv(index=False).encode("utf-8-sig")
+    csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
     xlsx_buf = io.BytesIO()
     with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
-        edited.to_excel(writer, index=False, sheet_name="Payments")
+        table.to_excel(writer, index=False, sheet_name="Payments")
     d1, d2 = st.columns(2)
     d1.download_button("Download CSV", csv_bytes, "payments.csv", "text/csv")
     d2.download_button(

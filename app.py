@@ -333,71 +333,428 @@ def make_preview(img: Image.Image, max_width=600) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+# # ----------------------------------------------------------------- UI
+# st.set_page_config(page_title="GPay Screenshot Extractor", layout="wide")
+# st.title("GPay / UPI Screenshot → Table")
+# st.caption("Upload payment screenshots. Details are extracted into a table you can edit and export.")
+
+# if "rows" not in st.session_state:
+#     st.session_state.rows = []
+# if "seen_files" not in st.session_state:
+#     st.session_state.seen_files = set()      # fingerprints of screenshots already read
+
+# files = st.file_uploader(
+#     "Upload screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True
+# )
+
+# col_a, col_b = st.columns([1, 1])
+# if col_a.button("Extract", type="primary", disabled=not files):
+#     progress = st.progress(0.0)
+#     for n, f in enumerate(files, 1):
+#         data = f.getvalue()
+#         digest = hashlib.sha256(data).hexdigest()
+#         if digest not in st.session_state.seen_files:       # the exact same file again -> skip
+#             st.session_state.seen_files.add(digest)
+#             img = Image.open(io.BytesIO(data))
+#             row = parse_payment(ocr_lines(img), f.name)
+#             if not is_duplicate(row, st.session_state.rows):
+#                 row[PREVIEW] = make_preview(img)
+#                 st.session_state.rows.append(row)
+#         progress.progress(n / len(files))
+#     progress.empty()
+
+# if col_b.button("Clear all"):
+#     st.session_state.rows = []
+#     st.session_state.seen_files = set()
+
+# # taller rows so the thumbnails are visible (only on Streamlit versions that support it)
+# ROW_KW = {"row_height": 80} if "row_height" in inspect.signature(st.data_editor).parameters else {}
+
+# if st.session_state.rows:
+#     df = pd.DataFrame(st.session_state.rows, columns=COLUMNS + [PREVIEW])
+
+#     st.subheader("Extracted data (click a cell to correct it)")
+#     st.caption("Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row.")
+#     edited = st.data_editor(
+#         df,
+#         num_rows="dynamic",
+#         use_container_width=True,
+#         disabled=[PREVIEW],
+#         column_config={PREVIEW: st.column_config.ImageColumn(PREVIEW)},
+#         **ROW_KW,
+#     )
+#     table = edited.drop(columns=[PREVIEW], errors="ignore")   # what gets exported
+
+#     for i, r in table.fillna("").iterrows():
+#         if any(str(v) != "" for v in r):
+#             bad = check_row(r)
+#             if bad:
+#                 st.warning(f"Row {i + 1}: please check {', '.join(bad)}")
+
+#     csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
+#     xlsx_buf = io.BytesIO()
+#     with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
+#         table.to_excel(writer, index=False, sheet_name="Payments")
+#     d1, d2 = st.columns(2)
+#     d1.download_button("Download CSV", csv_bytes, "payments.csv", "text/csv")
+#     d2.download_button(
+#         "Download Excel", xlsx_buf.getvalue(), "payments.xlsx",
+#         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#     )
+
+
 # ----------------------------------------------------------------- UI
-st.set_page_config(page_title="GPay Screenshot Extractor", layout="wide")
-st.title("GPay / UPI Screenshot → Table")
-st.caption("Upload payment screenshots. Details are extracted into a table you can edit and export.")
+st.set_page_config(page_title="GPay Screenshot Extractor", page_icon="🧾", layout="wide")
+
+# STYLE = """
+# <style>
+# @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+# :root {
+#   --bg: #0A0F1F; --surface: #10172B; --surface-2: #151D36; --line: #222B4A;
+#   --text: #E8ECF8; --muted: #8E99BA; --accent: #6366F1; --accent-2: #8B5CF6;
+#   --good: #34D399; --warn: #F59E0B;
+# }
+
+# /* ---------- page ---------- */
+# html, body, .stApp, [data-testid="stAppViewContainer"], button, input, textarea {
+#   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif !important;
+# }
+# .stApp {
+#   background:
+#     radial-gradient(1100px 520px at 8% -8%, rgba(99,102,241,.20), transparent 60%),
+#     radial-gradient(900px 480px at 100% 0%, rgba(139,92,246,.15), transparent 55%),
+#     var(--bg);
+#   color: var(--text);
+# }
+# [data-testid="stHeader"] { background: transparent; }
+# [data-testid="stAppDeployButton"], #MainMenu, footer { display: none !important; }
+# .block-container { padding: 2.4rem 3rem 4rem; max-width: 2400px; }
+# ::selection { background: rgba(99,102,241,.45); }
+# * { scrollbar-width: thin; scrollbar-color: #2B3560 transparent; }
+
+# /* ---------- hero ---------- */
+# .hero {
+#   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+#   padding: 26px 30px; margin-bottom: 22px; border-radius: 20px;
+#   background: linear-gradient(135deg, rgba(99,102,241,.16), rgba(139,92,246,.08) 55%, rgba(16,23,43,.6));
+#   border: 1px solid rgba(99,102,241,.28);
+#   box-shadow: 0 10px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
+# }
+# .hero-icon {
+#   width: 54px; height: 54px; border-radius: 15px; flex: none;
+#   display: grid; place-items: center;
+#   background: linear-gradient(135deg, var(--accent), var(--accent-2));
+#   box-shadow: 0 8px 22px rgba(99,102,241,.45);
+# }
+# .hero-text { flex: 1 1 380px; min-width: 260px; }
+# .hero h1 {
+#   margin: 0; padding: 0; font-size: 1.85rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.2;
+#   background: linear-gradient(90deg, #FFFFFF 10%, #C4C9FF 90%);
+#   -webkit-background-clip: text; background-clip: text; color: transparent;
+# }
+# .hero h1 span { color: #A5A9FF; -webkit-text-fill-color: #A5A9FF; }
+# .hero p { margin: .35rem 0 0; color: var(--muted); font-size: .98rem; }
+# .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+# .chips span {
+#   font-size: .74rem; font-weight: 600; letter-spacing: .02em; color: #C9CEFF;
+#   padding: 6px 12px; border-radius: 999px;
+#   background: rgba(99,102,241,.14); border: 1px solid rgba(99,102,241,.32);
+# }
+
+# /* ---------- cards ---------- */
+# .st-key-card_upload, .st-key-card_table, .st-key-card_export, .empty {
+#   background: linear-gradient(180deg, rgba(21,29,54,.82), rgba(16,23,43,.82));
+#   border: 1px solid var(--line); border-radius: 18px;
+#   padding: 22px 26px 24px; margin-bottom: 18px;
+#   box-shadow: 0 12px 34px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.035);
+# }
+
+# /* ---------- step headers ---------- */
+# .step { display: flex; align-items: flex-start; gap: 14px; margin: 0 0 14px; }
+# .step .num {
+#   flex: none; width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+#   font-weight: 700; font-size: .9rem; color: #fff;
+#   background: linear-gradient(135deg, var(--accent), var(--accent-2));
+#   box-shadow: 0 4px 12px rgba(99,102,241,.4);
+# }
+# .step .ttl { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; color: var(--text); line-height: 1.35; }
+# .step .hint { margin-top: 2px; font-size: .86rem; color: var(--muted); }
+
+# /* ---------- file uploader ---------- */
+# [data-testid="stFileUploaderDropzone"] {
+#   background: rgba(99,102,241,.06); border: 1.5px dashed #3A468A; border-radius: 14px; padding: 18px 20px;
+#   transition: border-color .15s, background .15s;
+# }
+# [data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accent); background: rgba(99,102,241,.11); }
+# [data-testid="stFileUploaderDropzoneInstructions"] span { color: #C9CEE8; font-weight: 500; }
+# [data-testid="stFileUploaderDropzoneInstructions"] small { color: var(--muted); }
+# [data-testid="stFileUploaderFile"] {
+#   background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px;
+# }
+
+# /* ---------- buttons ---------- */
+# [data-testid="stBaseButton-primary"] {
+#   background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: 0;
+#   border-radius: 11px; padding: .58rem 1.5rem; font-weight: 600; letter-spacing: .01em;
+#   box-shadow: 0 8px 20px rgba(99,102,241,.38); transition: transform .12s, box-shadow .12s, filter .12s;
+# }
+# [data-testid="stBaseButton-primary"]:hover { transform: translateY(-1px); filter: brightness(1.1); box-shadow: 0 12px 26px rgba(99,102,241,.5); }
+# [data-testid="stBaseButton-primary"]:active { transform: translateY(0); }
+# [data-testid="stBaseButton-primary"]:disabled { opacity: .4; box-shadow: none; filter: grayscale(.35); transform: none; }
+# [data-testid="stBaseButton-secondary"] {
+#   background: rgba(255,255,255,.03); color: #CBD1EE; border: 1px solid #2E3A66;
+#   border-radius: 11px; padding: .58rem 1.3rem; font-weight: 500; transition: all .12s;
+# }
+# [data-testid="stBaseButton-secondary"]:hover { border-color: var(--accent); color: #fff; background: rgba(99,102,241,.14); }
+# .st-key-card_export [data-testid="stBaseButton-secondary"] {
+#   background: rgba(99,102,241,.12); border-color: rgba(99,102,241,.45); color: #E3E6FF; font-weight: 600;
+# }
+# .st-key-card_export [data-testid="stBaseButton-secondary"]:hover { background: rgba(99,102,241,.26); }
+
+# /* ---------- table ---------- */
+# [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+#   border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+#   box-shadow: 0 6px 22px rgba(0,0,0,.3);
+# }
+
+# /* ---------- alerts (row warnings) ---------- */
+# [data-testid="stAlert"] { border-radius: 12px; margin-top: 4px; }
+# [data-testid="stAlertContainer"] {
+#   background: rgba(245,158,11,.09) !important; border: 1px solid rgba(245,158,11,.32);
+#   border-left: 4px solid var(--warn); border-radius: 12px; color: #FCE7B2;
+# }
+
+# /* ---------- empty state ---------- */
+# .empty { text-align: center; padding: 44px 24px; color: var(--muted); }
+# .empty .big { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+# .empty .ico { font-size: 2rem; margin-bottom: 6px; opacity: .9; }
+# </style>
+# """
+
+STYLE = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --bg: #140E12; --surface: #1C1319; --surface-2: #24181F; --line: #3A2A33;
+  --text: #F3ECF0; --muted: #B09AA6; --accent: #7E5E71; --accent-2: #6F5061;
+  --good: #C79BB3; --warn: #F59E0B;
+}
+
+/* ---------- page ---------- */
+html, body, .stApp, [data-testid="stAppViewContainer"], button, input, textarea {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif !important;
+}
+.stApp {
+  background:
+    radial-gradient(1100px 520px at 8% -8%, rgba(150,108,130,.20), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, rgba(111,80,97,.15), transparent 55%),
+    var(--bg);
+  color: var(--text);
+}
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stAppDeployButton"], #MainMenu, footer { display: none !important; }
+.block-container { padding: 2.4rem 3rem 4rem; max-width: 2400px; }
+::selection { background: rgba(150,108,130,.45); }
+* { scrollbar-width: thin; scrollbar-color: #4B3643 transparent; }
+
+/* ---------- hero ---------- */
+.hero {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 26px 30px; margin-bottom: 22px; border-radius: 20px;
+  background: linear-gradient(135deg, rgba(150,108,130,.16), rgba(111,80,97,.08) 55%, rgba(28,19,25,.6));
+  border: 1px solid rgba(150,108,130,.28);
+  box-shadow: 0 10px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.hero-icon {
+  width: 54px; height: 54px; border-radius: 15px; flex: none;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 8px 22px rgba(150,108,130,.45);
+}
+.hero-text { flex: 1 1 380px; min-width: 260px; }
+.hero h1 {
+  margin: 0; padding: 0; font-size: 1.85rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.2;
+  background: linear-gradient(90deg, #FFFFFF 10%, #E6D3DE 90%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero h1 span { color: #D9B6C9; -webkit-text-fill-color: #D9B6C9; }
+.hero p { margin: .35rem 0 0; color: var(--muted); font-size: .98rem; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chips span {
+  font-size: .74rem; font-weight: 600; letter-spacing: .02em; color: #E6D3DE;
+  padding: 6px 12px; border-radius: 999px;
+  background: rgba(150,108,130,.14); border: 1px solid rgba(150,108,130,.32);
+}
+
+/* ---------- cards ---------- */
+.st-key-card_upload, .st-key-card_table, .st-key-card_export, .empty {
+  background: linear-gradient(180deg, rgba(150,108,130,.82), rgba(28,19,25,.82));
+  border: 1px solid var(--line); border-radius: 18px;
+  padding: 22px 26px 24px; margin-bottom: 18px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.035);
+}
+
+/* ---------- step headers ---------- */
+.step { display: flex; align-items: flex-start; gap: 14px; margin: 0 0 14px; }
+.step .num {
+  flex: none; width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+  font-weight: 700; font-size: .9rem; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 4px 12px rgba(150,108,130,.4);
+}
+.step .ttl { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; color: var(--text); line-height: 1.35; }
+.step .hint { margin-top: 2px; font-size: .86rem; color: var(--muted); }
+
+/* ---------- file uploader ---------- */
+[data-testid="stFileUploaderDropzone"] {
+  background: rgba(150,108,130,.06); border: 1.5px dashed #6F5061; border-radius: 14px; padding: 18px 20px;
+  transition: border-color .15s, background .15s;
+}
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accent); background: rgba(150,108,130,.11); }
+[data-testid="stFileUploaderDropzoneInstructions"] span { color: #E8D8E1; font-weight: 500; }
+[data-testid="stFileUploaderDropzoneInstructions"] small { color: var(--muted); }
+[data-testid="stFileUploaderFile"] {
+  background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px;
+}
+
+/* ---------- buttons ---------- */
+[data-testid="stBaseButton-primary"] {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: 0;
+  border-radius: 11px; padding: .58rem 1.5rem; font-weight: 600; letter-spacing: .01em;
+  box-shadow: 0 8px 20px rgba(150,108,130,.38); transition: transform .12s, box-shadow .12s, filter .12s;
+}
+[data-testid="stBaseButton-primary"]:hover { transform: translateY(-1px); filter: brightness(1.1); box-shadow: 0 12px 26px rgba(150,108,130,.5); }
+[data-testid="stBaseButton-primary"]:active { transform: translateY(0); }
+[data-testid="stBaseButton-primary"]:disabled { opacity: .4; box-shadow: none; filter: grayscale(.35); transform: none; }
+[data-testid="stBaseButton-secondary"] {
+  background: rgba(255,255,255,.03); color: #CFE6DC; border: 1px solid #4B3643;
+  border-radius: 11px; padding: .58rem 1.3rem; font-weight: 500; transition: all .12s;
+}
+[data-testid="stBaseButton-secondary"]:hover { border-color: var(--accent); color: #fff; background: rgba(150,108,130,.14); }
+.st-key-card_export [data-testid="stBaseButton-secondary"] {
+  background: rgba(150,108,130,.12); border-color: rgba(150,108,130,.45); color: #F6E9F0; font-weight: 600;
+}
+.st-key-card_export [data-testid="stBaseButton-secondary"]:hover { background: rgba(150,108,130,.26); }
+
+/* ---------- table ---------- */
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+  border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 6px 22px rgba(0,0,0,.3);
+}
+
+/* ---------- alerts (row warnings) ---------- */
+[data-testid="stAlert"] { border-radius: 12px; margin-top: 4px; }
+[data-testid="stAlertContainer"] {
+  background: rgba(245,158,11,.09) !important; border: 1px solid rgba(245,158,11,.32);
+  border-left: 4px solid var(--warn); border-radius: 12px; color: #FCE7B2;
+}
+
+/* ---------- empty state ---------- */
+.empty { text-align: center; padding: 44px 24px; color: var(--muted); }
+.empty .big { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.empty .ico { font-size: 2rem; margin-bottom: 6px; opacity: .9; }
+</style>
+"""
+st.markdown(STYLE, unsafe_allow_html=True)
+
+HERO = (
+    '<div class="hero">'
+    '<div class="hero-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" '
+    'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg></div>'
+    '<div class="hero-text"><h1>GPay / UPI Screenshot <span>→</span> Table</h1>'
+    '<p>Upload payment screenshots. Details are extracted into a table you can edit and export.</p></div>'
+    '<div class="chips"><span>Runs locally</span><span>CSV &amp; Excel export</span></div>'
+    '</div>'
+)
+st.markdown(HERO, unsafe_allow_html=True)
+
+
+def step(num, title, hint=""):
+    """Numbered section header (looks only)."""
+    html = f'<div class="step"><span class="num">{num}</span><div><div class="ttl">{title}</div>'
+    if hint:
+        html += f'<div class="hint">{hint}</div>'
+    st.markdown(html + "</div></div>", unsafe_allow_html=True)
+
 
 if "rows" not in st.session_state:
     st.session_state.rows = []
 if "seen_files" not in st.session_state:
     st.session_state.seen_files = set()      # fingerprints of screenshots already read
 
-files = st.file_uploader(
-    "Upload screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True
-)
+with st.container(key="card_upload"):
+    step(1, "Upload screenshots", "PNG, JPG or WebP · you can select several files at once")
+    files = st.file_uploader(
+        "Upload screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
 
-col_a, col_b = st.columns([1, 1])
-if col_a.button("Extract", type="primary", disabled=not files):
-    progress = st.progress(0.0)
-    for n, f in enumerate(files, 1):
-        data = f.getvalue()
-        digest = hashlib.sha256(data).hexdigest()
-        if digest not in st.session_state.seen_files:       # the exact same file again -> skip
-            st.session_state.seen_files.add(digest)
-            img = Image.open(io.BytesIO(data))
-            row = parse_payment(ocr_lines(img), f.name)
-            if not is_duplicate(row, st.session_state.rows):
-                row[PREVIEW] = make_preview(img)
-                st.session_state.rows.append(row)
-        progress.progress(n / len(files))
-    progress.empty()
+    col_a, col_b, _ = st.columns([1.2, 1.2, 6])
+    if col_a.button("Extract", type="primary", disabled=not files, use_container_width=True):
+        progress = st.progress(0.0)
+        for n, f in enumerate(files, 1):
+            data = f.getvalue()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest not in st.session_state.seen_files:       # the exact same file again -> skip
+                st.session_state.seen_files.add(digest)
+                img = Image.open(io.BytesIO(data))
+                row = parse_payment(ocr_lines(img), f.name)
+                if not is_duplicate(row, st.session_state.rows):
+                    row[PREVIEW] = make_preview(img)
+                    st.session_state.rows.append(row)
+            progress.progress(n / len(files))
+        progress.empty()
 
-if col_b.button("Clear all"):
-    st.session_state.rows = []
-    st.session_state.seen_files = set()
+    if col_b.button("Clear all", use_container_width=True):
+        st.session_state.rows = []
+        st.session_state.seen_files = set()
 
 # taller rows so the thumbnails are visible (only on Streamlit versions that support it)
 ROW_KW = {"row_height": 80} if "row_height" in inspect.signature(st.data_editor).parameters else {}
 
 if st.session_state.rows:
-    df = pd.DataFrame(st.session_state.rows, columns=COLUMNS + [PREVIEW])
+    with st.container(key="card_table"):
+        step(
+            2, "Extracted data (click a cell to correct it)",
+            "Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row.",
+        )
+        df = pd.DataFrame(st.session_state.rows, columns=COLUMNS + [PREVIEW])
+        edited = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            disabled=[PREVIEW],
+            column_config={PREVIEW: st.column_config.ImageColumn(PREVIEW)},
+            **ROW_KW,
+        )
+        table = edited.drop(columns=[PREVIEW], errors="ignore")   # what gets exported
 
-    st.subheader("Extracted data (click a cell to correct it)")
-    st.caption("Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row.")
-    edited = st.data_editor(
-        df,
-        num_rows="dynamic",
-        use_container_width=True,
-        disabled=[PREVIEW],
-        column_config={PREVIEW: st.column_config.ImageColumn(PREVIEW)},
-        **ROW_KW,
-    )
-    table = edited.drop(columns=[PREVIEW], errors="ignore")   # what gets exported
+        for i, r in table.fillna("").iterrows():
+            if any(str(v) != "" for v in r):
+                bad = check_row(r)
+                if bad:
+                    st.warning(f"Row {i + 1}: please check {', '.join(bad)}")
 
-    for i, r in table.fillna("").iterrows():
-        if any(str(v) != "" for v in r):
-            bad = check_row(r)
-            if bad:
-                st.warning(f"Row {i + 1}: please check {', '.join(bad)}")
-
-    csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
-    xlsx_buf = io.BytesIO()
-    with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
-        table.to_excel(writer, index=False, sheet_name="Payments")
-    d1, d2 = st.columns(2)
-    d1.download_button("Download CSV", csv_bytes, "payments.csv", "text/csv")
-    d2.download_button(
-        "Download Excel", xlsx_buf.getvalue(), "payments.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    with st.container(key="card_export"):
+        step(3, "Export", "Download the table as it appears above (the Screenshot column is not included).")
+        csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
+        xlsx_buf = io.BytesIO()
+        with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
+            table.to_excel(writer, index=False, sheet_name="Payments")
+        d1, d2, _ = st.columns([1.2, 1.2, 6])
+        d1.download_button("Download CSV", csv_bytes, "payments.csv", "text/csv", use_container_width=True)
+        d2.download_button(
+            "Download Excel", xlsx_buf.getvalue(), "payments.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+else:
+    st.markdown(
+        '<div class="empty"><div class="ico">🧾</div>'
+        '<div class="big">No payments yet</div>'
+        'Upload one or more screenshots above, then click <b>Extract</b>.</div>',
+        unsafe_allow_html=True,
     )

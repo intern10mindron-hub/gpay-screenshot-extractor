@@ -11,6 +11,14 @@ import streamlit as st
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
+try:                                   # PDF support: pip install pymupdf
+    import pymupdf
+except ImportError:
+    try:
+        import fitz as pymupdf         # older PyMuPDF versions
+    except ImportError:
+        pymupdf = None
+
 COLUMNS = [
     "Date", "Time", "Amount (INR)", "Status", "Paid To", "Note",
     "Bank", "Account Last4", "UPI Transaction ID",
@@ -305,9 +313,12 @@ def check_row(r):
         bad.append("Time")
     if r["Amount (INR)"] in ("", None):
         bad.append("Amount")
-    if not re.fullmatch(r"\d{12}", str(r["UPI Transaction ID"])):
+    ref = str(r["UPI Transaction ID"])
+    is_upi = re.fullmatch(r"\d{12}", ref)                           # UPI: 12 digits
+    is_utr = re.fullmatch(r"[A-Za-z]{4}[A-Za-z0-9]{8,24}", ref)      # bank transfer UTR (NEFT/IMPS/RTGS)
+    if not (is_upi or is_utr):
         bad.append("UPI Transaction ID")
-    if not r["Google Transaction ID"]:
+    if not is_utr and not r["Google Transaction ID"]:                # bank transfers have no Google ID
         bad.append("Google Transaction ID")
     return bad
 
@@ -402,6 +413,128 @@ def make_preview(img: Image.Image, max_width=600) -> str:
 #         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 #     )
 
+# ------------------------------------------------------------ PDF support
+# Bank transfer advice (e.g. "Domestic Payment Transaction Details"): label -> pattern
+BANK_LABELS = [
+    ("utr",         r"(?:utr|transaction\s*ref(?:erence)?|reference)\s*(?:no\.?|number|id)?"),
+    ("from_acct",   r"from\s*account(?:\s*(?:number|no\.?))?"),
+    ("txn_date",    r"transaction\s*date(?:\s*(?:and|&)\s*time)?"),
+    ("benef",       r"beneficiary\s*name|payee\s*name"),
+    ("to_name",     r"to\s*account\s*name"),
+    ("desc",        r"description|remarks?|narration|purpose"),
+    ("status",      r"status"),
+    ("amount",      r"amount"),
+    ("total_debit", r"total\s*debit(?:\s*from\s*account)?"),
+    ("when",        r"transfer\s*when"),
+]
+ACRONYMS = {"HDFC", "ICICI", "SBI", "IDFC", "PNB", "UCO", "IDBI", "RBL", "DBS", "HSBC", "BOB", "AU"}
+
+
+def rows_from_items(items):
+    """items = (x, y_center, height, text) pieces. Join the pieces that sit on
+    the same visual line, left to right -> list of line strings."""
+    groups = []
+    for it in sorted(items, key=lambda t: t[1]):
+        if groups and abs(it[1] - groups[-1]["y"]) <= 0.6 * max(it[2], groups[-1]["h"]):
+            g = groups[-1]
+            g["items"].append(it)
+            g["y"] = sum(i[1] for i in g["items"]) / len(g["items"])
+            g["h"] = max(g["h"], it[2])
+        else:
+            groups.append({"y": it[1], "h": it[2], "items": [it]})
+    return [" ".join(i[3] for i in sorted(g["items"], key=lambda t: t[0])).strip() for g in groups]
+
+
+def bank_fields(rows):
+    """Find 'Label  value' rows of a bank advice -> {key: value}."""
+    found = {}
+    for r in rows:
+        for key, pat in BANK_LABELS:
+            if key not in found:
+                m = re.match(rf"^(?:{pat})(?:\s*[:\-]\s*|\s+)(.+)$", r, re.I)
+                if m:
+                    found[key] = m.group(1).strip()
+                    break
+    return found
+
+
+def find_bank_name(rows):
+    """The paying bank = a line that is just a bank name (letterhead / logo).
+    The 'Bank Name' row is the other side's bank, so it is skipped."""
+    for r in rows:
+        if re.match(r"^bank\s*name\b", r, re.I):
+            continue
+        m = re.fullmatch(r"([A-Za-z&.]+(?:\s+[A-Za-z&.]+){0,2}\s+bank(?:\s+(?:ltd\.?|limited))?)", r.strip(), re.I)
+        if m:
+            words = re.sub(r"\s+(ltd\.?|limited)$", "", m.group(1), flags=re.I).split()
+            return " ".join(w.upper() if w.upper() in ACRONYMS else w.capitalize() for w in words)
+    return ""
+
+
+def parse_bank_advice(rows, payer_bank=""):
+    """Bank transfer advice -> table row (same columns as a GPay screenshot),
+    or None if these lines are not a bank advice."""
+    f = bank_fields(rows)
+    amt = re.search(r"\d[\d,]*(?:\.\d+)?", f.get("amount") or f.get("total_debit", ""))
+    utr = clean_id(f.get("utr", ""))
+    if not (amt and (utr or len(f) >= 4)):
+        return None
+    row = {c: "" for c in COLUMNS}
+    row["Amount (INR)"] = float(amt.group(0).replace(",", ""))
+    # OCR can read "01:38" as "01 :38", so tidy the colon before reading the time
+    row["Date"], row["Time"] = parse_date_time(re.sub(r"(\d)\s*:\s*(\d)", r"\1:\2", f.get("txn_date", "")))
+    row["Time"] = re.sub(r"^0(\d:)", r"\1", row["Time"])            # 01:38 PM -> 1:38 PM
+    if not row["Date"]:                                              # fall back to "Transfer When" / the intro sentence
+        for src in [f.get("when", "")] + rows:
+            row["Date"], _ = parse_date_time(src)
+            if row["Date"]:
+                break
+    row["Status"] = f.get("status", "").title()
+    name = f.get("benef") or f.get("to_name", "")
+    row["Paid To"] = name
+    row["Receiver Name"] = name
+    row["Note"] = f.get("desc", "")
+    row["UPI Transaction ID"] = utr
+    digits = re.sub(r"\D", "", f.get("from_acct", ""))
+    row["Account Last4"] = digits[-4:] if len(digits) >= 4 else ""
+    row["Bank"] = payer_bank
+    return row
+
+
+def bank_from_logo(img):
+    """Read the paying bank from the page header (logos are pictures, not text)."""
+    head = img.crop((0, 0, img.width, int(img.height * 0.14)))
+    lines = ocr_lines(head)
+    return find_bank_name(rows_from_items([(l["x"], l["y"], l["h"], l["spaced"]) for l in lines]))
+
+
+def extract_pdf(data):
+    """Read every page of a PDF -> list of (row, page_image).
+    Normal PDFs: exact text from the text layer. Scanned PDFs: OCR."""
+    results = []
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    for page in doc:
+        zoom = 1600 / max(page.rect.width, page.rect.height)         # about as big as a phone screenshot
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        row = None
+        words = page.get_text("words")
+        if len(words) >= 15:                                         # has a real text layer -> no OCR needed
+            rows = rows_from_items([(w[0], (w[1] + w[3]) / 2, w[3] - w[1], w[4]) for w in words])
+            row = parse_bank_advice(rows, find_bank_name(rows))
+            if row is not None and not row["Bank"]:
+                row["Bank"] = bank_from_logo(img)
+        if row is None:                                              # scanned / image-only page -> OCR
+            lines = ocr_lines(img)
+            rows = rows_from_items([(l["x"], l["y"], l["h"], l["spaced"]) for l in lines])
+            row = parse_bank_advice(rows, find_bank_name(rows))
+            if row is None:                                          # e.g. a GPay screenshot saved as PDF
+                row = parse_payment(lines)
+                if row["Amount (INR)"] == "" and row["Date"] == "":
+                    row = None
+        if row is not None:
+            results.append((row, img))
+    return results
 
 # ----------------------------------------------------------------- UI
 st.set_page_config(page_title="GPay Screenshot Extractor", page_icon="🧾", layout="wide")
@@ -686,9 +819,9 @@ if "seen_files" not in st.session_state:
     st.session_state.seen_files = set()      # fingerprints of screenshots already read
 
 with st.container(key="card_upload"):
-    step(1, "Upload screenshots", "PNG, JPG or WebP · you can select several files at once")
+    step(1, "Upload screenshots or PDFs", "PNG, JPG, WebP or PDF · you can select several files at once")
     files = st.file_uploader(
-        "Upload screenshots", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
+        "Upload screenshots or PDFs", type=["png", "jpg", "jpeg", "webp", "pdf"], accept_multiple_files=True,
         label_visibility="collapsed",
     )
 
@@ -699,12 +832,26 @@ with st.container(key="card_upload"):
             data = f.getvalue()
             digest = hashlib.sha256(data).hexdigest()
             if digest not in st.session_state.seen_files:       # the exact same file again -> skip
-                st.session_state.seen_files.add(digest)
-                img = Image.open(io.BytesIO(data))
-                row = parse_payment(ocr_lines(img), f.name)
-                if not is_duplicate(row, st.session_state.rows):
-                    row[PREVIEW] = make_preview(img)
-                    st.session_state.rows.append(row)
+                is_pdf = f.name.lower().endswith(".pdf")
+                results = None
+                if is_pdf and pymupdf is None:
+                    st.error("PDF support needs PyMuPDF. Run:  pip install pymupdf")
+                elif is_pdf:
+                    try:
+                        results = extract_pdf(data)
+                        if not results:
+                            st.warning(f"{f.name}: no payment details found in this PDF.")
+                    except Exception as e:
+                        st.error(f"{f.name}: could not read this PDF ({e})")
+                else:
+                    img = Image.open(io.BytesIO(data))
+                    results = [(parse_payment(ocr_lines(img), f.name), img)]
+                if results is not None:
+                    st.session_state.seen_files.add(digest)
+                    for row, pic in results:
+                        if not is_duplicate(row, st.session_state.rows):
+                            row[PREVIEW] = make_preview(pic, max_width=1100 if is_pdf else 600)
+                            st.session_state.rows.append(row)
             progress.progress(n / len(files))
         progress.empty()
 

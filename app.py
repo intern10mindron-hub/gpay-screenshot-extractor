@@ -29,6 +29,7 @@ COLUMNS = [
 # Last table column: thumbnail of the row's screenshot (double-click to enlarge).
 # It is shown in the table only and is never exported.
 PREVIEW = "Screenshot"
+DELETE = "Delete"          # tick-box column used to remove rows (never exported)
 
 # Word-space detection. Gaps are measured as a fraction of the text-line height.
 # A gap can only be a space if it is at least MIN_WORD_GAP, and the spaces must
@@ -343,6 +344,17 @@ def make_preview(img: Image.Image, max_width=600) -> str:
     im.save(buf, format="JPEG", quality=80)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
+def preview_key(preview) -> str:
+    """Short fingerprint of a row's screenshot, used to find which uploaded file a row came from."""
+    return hashlib.md5(str(preview).encode()).hexdigest()
+
+
+def clean_value(v):
+    """Table cell -> plain value for the saved row list (empty cells become '')."""
+    return "" if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+# ------------------------------------------------------------ PDF support
+
 BANK_LABELS = [
     ("utr",         r"(?:utr|transaction\s*ref(?:erence)?|reference)\s*(?:no\.?|number|id)?"),
     ("from_acct",   r"from\s*account(?:\s*(?:number|no\.?))?"),
@@ -467,132 +479,6 @@ def extract_pdf(data):
 # ----------------------------------------------------------------- UI
 st.set_page_config(page_title="GPay Screenshot Extractor", page_icon="🧾", layout="wide")
 
-# STYLE = """
-# <style>
-# @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-# :root {
-#   --bg: #140E12; --surface: #1C1319; --surface-2: #24181F; --line: #3A2A33;
-#   --text: #F3ECF0; --muted: #B09AA6; --accent: #7E5E71; --accent-2: #6F5061;
-#   --good: #C79BB3; --warn: #F59E0B;
-# }
-
-# /* ---------- page ---------- */
-# html, body, .stApp, [data-testid="stAppViewContainer"], button, input, textarea {
-#   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif !important;
-# }
-# .stApp {
-#   background:
-#     radial-gradient(1100px 520px at 8% -8%, rgba(150,108,130,.20), transparent 60%),
-#     radial-gradient(900px 480px at 100% 0%, rgba(111,80,97,.15), transparent 55%),
-#     var(--bg);
-#   color: var(--text);
-# }
-# [data-testid="stHeader"] { background: transparent; }
-# [data-testid="stAppDeployButton"], #MainMenu, footer { display: none !important; }
-# .block-container { padding: 2.4rem 3rem 4rem; max-width: 2400px; }
-# ::selection { background: rgba(150,108,130,.45); }
-# * { scrollbar-width: thin; scrollbar-color: #4B3643 transparent; }
-
-# /* ---------- hero ---------- */
-# .hero {
-#   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-#   padding: 26px 30px; margin-bottom: 22px; border-radius: 20px;
-#   background: linear-gradient(135deg, rgba(150,108,130,.16), rgba(111,80,97,.08) 55%, rgba(28,19,25,.6));
-#   border: 1px solid rgba(150,108,130,.28);
-#   box-shadow: 0 10px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
-# }
-# .hero-icon {
-#   width: 54px; height: 54px; border-radius: 15px; flex: none;
-#   display: grid; place-items: center;
-#   background: linear-gradient(135deg, var(--accent), var(--accent-2));
-#   box-shadow: 0 8px 22px rgba(150,108,130,.45);
-# }
-# .hero-text { flex: 1 1 380px; min-width: 260px; }
-# .hero h1 {
-#   margin: 0; padding: 0; font-size: 1.85rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.2;
-#   background: linear-gradient(90deg, #FFFFFF 10%, #E6D3DE 90%);
-#   -webkit-background-clip: text; background-clip: text; color: transparent;
-# }
-# .hero h1 span { color: #D9B6C9; -webkit-text-fill-color: #D9B6C9; }
-# .hero p { margin: .35rem 0 0; color: var(--muted); font-size: .98rem; }
-# .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-# .chips span {
-#   font-size: .74rem; font-weight: 600; letter-spacing: .02em; color: #E6D3DE;
-#   padding: 6px 12px; border-radius: 999px;
-#   background: rgba(150,108,130,.14); border: 1px solid rgba(150,108,130,.32);
-# }
-
-# /* ---------- cards ---------- */
-# .st-key-card_upload, .st-key-card_table, .st-key-card_export, .empty {
-#   background: linear-gradient(180deg, rgba(150,108,130,.82), rgba(28,19,25,.82));
-#   border: 1px solid var(--line); border-radius: 18px;
-#   padding: 22px 26px 24px; margin-bottom: 18px;
-#   box-shadow: 0 12px 34px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.035);
-# }
-
-# /* ---------- step headers ---------- */
-# .step { display: flex; align-items: flex-start; gap: 14px; margin: 0 0 14px; }
-# .step .num {
-#   flex: none; width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
-#   font-weight: 700; font-size: .9rem; color: #fff;
-#   background: linear-gradient(135deg, var(--accent), var(--accent-2));
-#   box-shadow: 0 4px 12px rgba(150,108,130,.4);
-# }
-# .step .ttl { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; color: var(--text); line-height: 1.35; }
-# .step .hint { margin-top: 2px; font-size: .86rem; color: var(--muted); }
-
-# /* ---------- file uploader ---------- */
-# [data-testid="stFileUploaderDropzone"] {
-#   background: rgba(150,108,130,.06); border: 1.5px dashed #6F5061; border-radius: 14px; padding: 18px 20px;
-#   transition: border-color .15s, background .15s;
-# }
-# [data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accent); background: rgba(150,108,130,.11); }
-# [data-testid="stFileUploaderDropzoneInstructions"] span { color: #E8D8E1; font-weight: 500; }
-# [data-testid="stFileUploaderDropzoneInstructions"] small { color: var(--muted); }
-# [data-testid="stFileUploaderFile"] {
-#   background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px;
-# }
-
-# /* ---------- buttons ---------- */
-# [data-testid="stBaseButton-primary"] {
-#   background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; border: 0;
-#   border-radius: 11px; padding: .58rem 1.5rem; font-weight: 600; letter-spacing: .01em;
-#   box-shadow: 0 8px 20px rgba(150,108,130,.38); transition: transform .12s, box-shadow .12s, filter .12s;
-# }
-# [data-testid="stBaseButton-primary"]:hover { transform: translateY(-1px); filter: brightness(1.1); box-shadow: 0 12px 26px rgba(150,108,130,.5); }
-# [data-testid="stBaseButton-primary"]:active { transform: translateY(0); }
-# [data-testid="stBaseButton-primary"]:disabled { opacity: .4; box-shadow: none; filter: grayscale(.35); transform: none; }
-# [data-testid="stBaseButton-secondary"] {
-#   background: rgba(255,255,255,.03); color: #CFE6DC; border: 1px solid #4B3643;
-#   border-radius: 11px; padding: .58rem 1.3rem; font-weight: 500; transition: all .12s;
-# }
-# [data-testid="stBaseButton-secondary"]:hover { border-color: var(--accent); color: #fff; background: rgba(150,108,130,.14); }
-# .st-key-card_export [data-testid="stBaseButton-secondary"] {
-#   background: rgba(150,108,130,.12); border-color: rgba(150,108,130,.45); color: #F6E9F0; font-weight: 600;
-# }
-# .st-key-card_export [data-testid="stBaseButton-secondary"]:hover { background: rgba(150,108,130,.26); }
-
-# /* ---------- table ---------- */
-# [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
-#   border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
-#   box-shadow: 0 6px 22px rgba(0,0,0,.3);
-# }
-
-# /* ---------- alerts (row warnings) ---------- */
-# [data-testid="stAlert"] { border-radius: 12px; margin-top: 4px; }
-# [data-testid="stAlertContainer"] {
-#   background: rgba(245,158,11,.09) !important; border: 1px solid rgba(245,158,11,.32);
-#   border-left: 4px solid var(--warn); border-radius: 12px; color: #FCE7B2;
-# }
-
-# /* ---------- empty state ---------- */
-# .empty { text-align: center; padding: 44px 24px; color: var(--muted); }
-# .empty .big { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-# .empty .ico { font-size: 2rem; margin-bottom: 6px; opacity: .9; }
-# </style>
-# """
-
 STYLE = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -696,6 +582,10 @@ html, body, .stApp, [data-testid="stAppViewContainer"], button, input, textarea 
 }
 .st-key-card_export [data-testid="stBaseButton-secondary"]:hover { background: var(--accent); }
 
+.st-key-delete_rows [data-testid="stBaseButton-secondary"] { border-color: rgba(239,68,68,.55); color: #FCA5A5; }
+.st-key-delete_rows [data-testid="stBaseButton-secondary"]:hover { background: rgba(239,68,68,.16); border-color: #EF4444; color: #fff; }
+.st-key-delete_rows [data-testid="stBaseButton-secondary"]:disabled { opacity: .4; }
+
 /* ---------- table ---------- */
 [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
   border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
@@ -742,6 +632,8 @@ if "rows" not in st.session_state:
     st.session_state.rows = []
 if "seen_files" not in st.session_state:
     st.session_state.seen_files = set()      # fingerprints of screenshots already read
+if "file_of" not in st.session_state:
+    st.session_state.file_of = {}            # screenshot fingerprint -> the uploaded file it came from
 
 with st.container(key="card_upload"):
     step(1, "Upload screenshots or PDFs", "PNG, JPG, WebP or PDF · you can select several files at once")
@@ -776,6 +668,7 @@ with st.container(key="card_upload"):
                     for row, pic in results:
                         if not is_duplicate(row, st.session_state.rows):
                             row[PREVIEW] = make_preview(pic, max_width=1100 if is_pdf else 600)
+                            st.session_state.file_of[preview_key(row[PREVIEW])] = digest
                             st.session_state.rows.append(row)
             progress.progress(n / len(files))
         progress.empty()
@@ -783,6 +676,7 @@ with st.container(key="card_upload"):
     if col_b.button("Clear all", use_container_width=True):
         st.session_state.rows = []
         st.session_state.seen_files = set()
+        st.session_state.file_of = {}
 
 # taller rows so the thumbnails are visible (only on Streamlit versions that support it)
 ROW_KW = {"row_height": 80} if "row_height" in inspect.signature(st.data_editor).parameters else {}
@@ -791,18 +685,40 @@ if st.session_state.rows:
     with st.container(key="card_table"):
         step(
             2, "Extracted data (click a cell to correct it)",
-            "Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row.",
+            "Double-click a thumbnail in the Screenshot column to open the full screenshot and verify the row. "
+            "To remove rows, tick Delete on them and click Delete selected.",
         )
         df = pd.DataFrame(st.session_state.rows, columns=COLUMNS + [PREVIEW])
+        df.insert(0, DELETE, False)
         edited = st.data_editor(
             df,
             num_rows="dynamic",
             use_container_width=True,
             disabled=[PREVIEW],
-            column_config={PREVIEW: st.column_config.ImageColumn(PREVIEW)},
+            column_config={
+                DELETE: st.column_config.CheckboxColumn(DELETE, width="small", default=False),
+                PREVIEW: st.column_config.ImageColumn(PREVIEW),
+            },
             **ROW_KW,
         )
-        table = edited.drop(columns=[PREVIEW], errors="ignore")   # what gets exported
+        table = edited.drop(columns=[PREVIEW, DELETE], errors="ignore")   # what gets exported
+
+        # ---- delete the ticked rows (keeps the corrections typed in the other rows)
+        ticked = edited[DELETE].fillna(False).astype(bool)
+        del_col, _ = st.columns([1.6, 6.4])
+        if del_col.button(f"Delete selected ({int(ticked.sum())})", key="delete_rows",
+                          disabled=not ticked.any(), use_container_width=True):
+            kept = edited[~ticked].drop(columns=[DELETE])
+            new_rows = [{k: clean_value(v) for k, v in rec.items()} for rec in kept.to_dict("records")]
+            for rec in new_rows:
+                rec[PREVIEW] = rec[PREVIEW] or None
+            still_there = {preview_key(r[PREVIEW]) for r in new_rows if r[PREVIEW]}
+            for r in st.session_state.rows:                 # forget removed files so they can be uploaded again
+                k = preview_key(r[PREVIEW]) if r.get(PREVIEW) else None
+                if k and k not in still_there:
+                    st.session_state.seen_files.discard(st.session_state.file_of.pop(k, None))
+            st.session_state.rows = new_rows
+            st.rerun()
 
         for i, r in table.fillna("").iterrows():
             if any(str(v) != "" for v in r):
